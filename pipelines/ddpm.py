@@ -87,10 +87,12 @@ class DDPMPipeline:
             uncond_embeds = None 
         
         # TODO: starts with random noise
-        image = None # randn_tensor(image_shape, generator=generator, device=device)
+        image = randn_tensor(image_shape, generator=generator, device=device)
 
         # TODO: set step values using set_timesteps of scheduler
-        self.scheduler = None
+        # self.scheduler = None # this template was provided by them, I think it's wrong
+        # my code
+        self.scheduler.set_timesteps(num_inference_steps, device)
         
         # TODO: inverse diffusion process with for loop
         for t in self.progress_bar(self.scheduler.timesteps):
@@ -106,7 +108,7 @@ class DDPMPipeline:
                 c = None
             
             # TODO: 1. predict noise model_output
-            model_output = None
+            model_output = self.unet(image, t, c)
             
             if guidance_scale is not None or guidance_scale != 1.0:
                 # TODO: implement cfg
@@ -114,7 +116,7 @@ class DDPMPipeline:
                 model_output = None
             
             # TODO: 2. compute previous image: x_t -> x_t-1 using scheduler
-            image = None 
+            image = self.scheduler.step(model_output, t, image)
             
         
         # NOTE: this is for latent DDPM
@@ -126,7 +128,10 @@ class DDPMPipeline:
             image = None 
         
         # TODO: return final image, re-scale to [0, 1]
-        image = None 
+        image_min = image.min(dim=(1,2,3), keepdim=True)
+        image_max = image.max(dim=(1,2,3), keepdim=True)
+        image = (image - image_min) / (image_max - image_min)
+        image = image.clamp(0.0, 1.0)
         
         # convert to PIL images
         image = image.cpu().permute(0, 2, 3, 1).numpy()
