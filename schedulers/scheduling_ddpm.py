@@ -1,33 +1,33 @@
 from typing import List, Optional, Tuple, Union
 
-import torch 
-import torch.nn as nn 
+import torch
+import torch.nn as nn
 import numpy as np
 
 from utils import randn_tensor
 
 
 class DDPMScheduler(nn.Module):
-    
+
     def __init__(
         self,
         num_train_timesteps: int = 1000,
         num_inference_steps: Optional[int] = None,
         beta_start: float = 0.0001,
         beta_end: float = 0.02,
-        beta_schedule: str = 'linear',
+        beta_schedule: str = "linear",
         variance_type: str = "fixed_small",
-        prediction_type: str = 'epsilon',
+        prediction_type: str = "epsilon",
         clip_sample: bool = True,
         clip_sample_range: float = 1.0,
     ):
         """
         Args:
-            num_train_timesteps (`int`): 
-            
+            num_train_timesteps (`int`):
+
         """
         super(DDPMScheduler, self).__init__()
-        
+
         self.num_train_timesteps = num_train_timesteps
         self.num_inference_steps = num_inference_steps
         self.beta_start = beta_start
@@ -38,24 +38,24 @@ class DDPMScheduler(nn.Module):
         self.beta = beta_start
         self.clip_sample = clip_sample
         self.clip_sample_range = clip_sample_range
-        
-    
+
         # TODO: calculate betas
-        if self.beta_schedule == 'linear':
+        if self.beta_schedule == "linear":
             # This is the DDPM implementation
-            betas = torch.linspace(self.beta_start, self.beta_end, self.num_train_timesteps)
+            betas = torch.linspace(
+                self.beta_start, self.beta_end, self.num_train_timesteps
+            )
         self.register_buffer("betas", betas)
-         
+
         # TODO: calculate alphas
-        alphas = 1 - betas 
+        alphas = 1 - betas
         self.register_buffer("alphas", alphas)
         # TODO: calculate alpha cumulative product
-        alphas_cumprod = torch.cumprod(alphas) 
+        alphas_cumprod = torch.cumprod(alphas)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
-        
+
         # TODO: timesteps
         self.register_buffer("timesteps", torch.arange(self.num_train_timesteps).long())
-    
 
     def set_timesteps(
         self,
@@ -78,9 +78,11 @@ class DDPMScheduler(nn.Module):
                 f" {self.num_train_timesteps} as the unet model trained with this scheduler can only handle"
                 f" maximal {self.num_train_timesteps} timesteps."
             )
-            
+
         # TODO: set timesteps
-        timesteps = torch.linspace(0, self.num_train_timesteps - 1, num_inference_steps).long()
+        timesteps = torch.linspace(
+            0, self.num_train_timesteps - 1, num_inference_steps
+        ).long()
         self.timesteps = timesteps.to(device)
         # timesteps = None
         # if device:
@@ -88,22 +90,23 @@ class DDPMScheduler(nn.Module):
         # else:
         #     self.timesteps = torch.from_numpy(timesteps)
 
-
     def __len__(self):
         return self.num_train_timesteps
 
     def previous_timestep(self, timestep):
         """
         Get the previous timestep for a given timestep.
-        
+
         Args:
             timestep (`int`): The current timestep.
-        
-        Return: 
+
+        Return:
             prev_t (`int`): The previous timestep.
         """
         num_inference_steps = (
-            self.num_inference_steps if self.num_inference_steps else self.num_train_timesteps
+            self.num_inference_steps
+            if self.num_inference_steps
+            else self.num_train_timesteps
         )
         # TODO: caluclate previous timestep
         if timestep == 0:
@@ -112,25 +115,23 @@ class DDPMScheduler(nn.Module):
             prev_t = timestep - 1
         return prev_t
 
-    
     def _get_variance(self, t):
         """
         This is one of the most important functions in the DDPM. It calculates the variance $sigma_t$ for a given timestep.
-        
+
         Args:
             t (`int`): The current timestep.
-        
+
         Return:
             variance (`torch.Tensor`): The variance $sigma_t$ for the given timestep.
         """
-        
-        
+
         # TODO: calculate $beta_t$ for the current timestep using the cumulative product of alphas
-        prev_t = self.previous_timestep(t) 
-        alpha_prod_t = self.alphas_cumprod[t] 
-        alpha_prod_t_prev =  self.alphas_cumprod[prev_t] 
-        current_beta_t = 1 - alpha_prod_t / alpha_prod_t_prev 
-    
+        prev_t = self.previous_timestep(t)
+        alpha_prod_t = self.alphas_cumprod[t]
+        alpha_prod_t_prev = self.alphas_cumprod[prev_t]
+        current_beta_t = 1 - alpha_prod_t / alpha_prod_t_prev
+
         # TODO: For t > 0, compute predicted variance $\beta_t$ (see formula (6) and (7) from https://arxiv.org/pdf/2006.11239.pdf)
         # and sample from it to get previous sample
         # x_{t-1} ~ N(pred_prev_sample, variance) == add variance to pred_sample
@@ -144,7 +145,7 @@ class DDPMScheduler(nn.Module):
         # 2. fixed_large: $\sigma_t^2 = \beta$, this one is optimal for $x_0 \sim mathcal{N}(0, 1)$
         if self.variance_type == "fixed_small":
             # TODO: fixed small variance
-            variance = current_beta_t 
+            variance = current_beta_t
         elif self.variance_type == "fixed_large":
             # TODO: fixed large variance
             variance = current_beta_t * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
@@ -152,55 +153,57 @@ class DDPMScheduler(nn.Module):
             if t == 1:
                 variance = variance
         else:
-            raise NotImplementedError(f"Variance type {self.variance_type} not implemented.")
+            raise NotImplementedError(
+                f"Variance type {self.variance_type} not implemented."
+            )
 
         return variance
-    
-    
+
     def add_noise(
         self,
         original_samples: torch.Tensor,
         noise: torch.Tensor,
         timesteps: torch.IntTensor,
-    ) -> torch.Tensor: 
+    ) -> torch.Tensor:
         """
         Add noise to the original samples. This function is used to add noise to the original samples at the beginning of each training iteration.
-        
-        
+
+
         Args:
-            original_samples (`torch.Tensor`): 
+            original_samples (`torch.Tensor`):
                 The original samples.
-            noise (`torch.Tensor`): 
+            noise (`torch.Tensor`):
                 The noise tensor.
-            timesteps (`torch.IntTensor`): 
+            timesteps (`torch.IntTensor`):
                 The timesteps.
-        
+
         Return:
-            noisy_samples (`torch.Tensor`): 
+            noisy_samples (`torch.Tensor`):
                 The noisy samples.
         """
-        
+
         # make sure alphas the on the same device as samples
         alphas_cumprod = self.alphas_cumprod.to(dtype=original_samples.dtype)
         timesteps = timesteps.to(original_samples.device)
-        
+
         # TODO: get sqrt alphas
-        sqrt_alpha_prod = torch.sqrt(alphas_cumprod) 
-        # sqrt_alpha_prod = None 
+        sqrt_alpha_prod = torch.sqrt(alphas_cumprod)
+        # sqrt_alpha_prod = None
         while len(sqrt_alpha_prod.shape) < len(original_samples.shape):
             sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
-            
+
         # TODO: get sqrt one miucs alphas
-        sqrt_one_minus_alpha_prod = torch.sqrt(1 - alphas_cumprod) 
-        # sqrt_one_minus_alpha_prod = None 
+        sqrt_one_minus_alpha_prod = torch.sqrt(1 - alphas_cumprod)
+        # sqrt_one_minus_alpha_prod = None
         while len(sqrt_one_minus_alpha_prod.shape) < len(original_samples.shape):
             sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
-        
+
         # TODO: add noise to the original samples using the formula (14) from https://arxiv.org/pdf/2006.11239.pdf
-        noisy_samples = sqrt_alpha_prod * original_samples + sqrt_one_minus_alpha_prod * noise # might need to use .unsqueeze(-1) here
+        noisy_samples = (
+            sqrt_alpha_prod * original_samples + sqrt_one_minus_alpha_prod * noise
+        )  # might need to use .unsqueeze(-1) here
         return noisy_samples
-    
-    
+
     def step(
         self,
         model_output: torch.Tensor,
@@ -226,25 +229,28 @@ class DDPMScheduler(nn.Module):
             pred_prev_sample (`torch.Tensor`):
                 The predicted previous sample.
         """
-        
-        
+
         t = timestep
         prev_t = self.previous_timestep(t)
-        
+
         # TODO: 1. compute alphas, betas
-        alpha_prod_t = self.alphas_cumprod[t] 
-        alpha_prod_t_prev = self.alphas_cumprod[prev_t] 
-        beta_prod_t = None 
-        beta_prod_t_prev = None 
-        current_alpha_t = self.alphas[t] 
-        current_beta_t = self.betas[t] 
-        
+        alpha_prod_t = self.alphas_cumprod[t]
+        alpha_prod_t_prev = self.alphas_cumprod[prev_t]
+        beta_prod_t = None
+        beta_prod_t_prev = None
+        current_alpha_t = self.alphas[t]
+        current_beta_t = self.betas[t]
+
         # TODO: 2. compute predicted original sample from predicted noise also called
         # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
-        if self.prediction_type == 'epsilon':
-            pred_original_sample = (sample - torch.sqrt(1 - alpha_prod_t) * model_output) / torch.sqrt(alpha_prod_t)
+        if self.prediction_type == "epsilon":
+            pred_original_sample = (
+                sample - torch.sqrt(1 - alpha_prod_t) * model_output
+            ) / torch.sqrt(alpha_prod_t)
         else:
-            raise NotImplementedError(f"Prediction type {self.prediction_type} not implemented.")
+            raise NotImplementedError(
+                f"Prediction type {self.prediction_type} not implemented."
+            )
 
         # TODO: 3. Clip or threshold "predicted x_0" (for better sampling quality)
         if self.clip_sample:
@@ -254,25 +260,34 @@ class DDPMScheduler(nn.Module):
 
         # TODO: 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
         # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-        pred_original_sample_coeff  = torch.sqrt(alpha_prod_t_prev) * current_beta_t / (1 - alpha_prod_t) 
-        current_sample_coeff        = torch.sqrt(alpha_prod_t) * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
+        pred_original_sample_coeff = (
+            torch.sqrt(alpha_prod_t_prev) * current_beta_t / (1 - alpha_prod_t)
+        )
+        current_sample_coeff = (
+            torch.sqrt(alpha_prod_t) * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
+        )
 
         # 5. Compute predicted previous sample µ_t
         # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-        pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * model_output 
-
+        pred_prev_sample = (
+            pred_original_sample_coeff * pred_original_sample
+            + current_sample_coeff * model_output
+        )
 
         # 6. Add noise
         variance = 0
         if t > 0:
             device = model_output.device
             variance_noise = randn_tensor(
-                model_output.shape, generator=generator, device=device, dtype=model_output.dtype
+                model_output.shape,
+                generator=generator,
+                device=device,
+                dtype=model_output.dtype,
             )
             # TODO: use self,get_variance and variance_noise
-            variance = self._get_variance(t)**0.5 * variance_noise
-        
+            variance = self._get_variance(t) ** 0.5 * variance_noise
+
         # TODO: add variance to prev_sample
-        pred_prev_sample += variance 
-        
+        pred_prev_sample += variance
+
         return pred_prev_sample
