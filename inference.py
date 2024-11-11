@@ -80,7 +80,7 @@ def main():
         # TODO: class embeder
         class_embedder = ClassEmbedder(
             embed_dim=args.unet_ch
-        )  # TODO: check if this is correct, i have no clue what this is
+        )  # TODO: check if this is correct,
 
     # send to device
     unet = unet.to(device)
