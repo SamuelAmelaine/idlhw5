@@ -51,7 +51,7 @@ class DDPMScheduler(nn.Module):
         alphas = 1 - betas
         self.register_buffer("alphas", alphas)
         # TODO: calculate alpha cumulative product
-        alphas_cumprod = torch.cumprod(alphas)
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
 
         # TODO: timesteps
@@ -166,42 +166,40 @@ class DDPMScheduler(nn.Module):
         timesteps: torch.IntTensor,
     ) -> torch.Tensor:
         """
-        Add noise to the original samples. This function is used to add noise to the original samples at the beginning of each training iteration.
-
+        Add noise to the original samples based on the given timesteps.
 
         Args:
-            original_samples (`torch.Tensor`):
-                The original samples.
-            noise (`torch.Tensor`):
-                The noise tensor.
-            timesteps (`torch.IntTensor`):
-                The timesteps.
+            original_samples (torch.Tensor): Original images. Shape: (batch_size, C, H, W)
+            noise (torch.Tensor): Noise tensor. Shape: (batch_size, C, H, W)
+            timesteps (torch.IntTensor): Timesteps for each sample in the batch. Shape: (batch_size,)
 
-        Return:
-            noisy_samples (`torch.Tensor`):
-                The noisy samples.
+        Returns:
+            torch.Tensor: Noisy images.
         """
+        # Ensure alphas_cumprod is on the same device and dtype as original_samples
+        alphas_cumprod = self.alphas_cumprod.to(
+            dtype=original_samples.dtype, device=original_samples.device
+        )
 
-        # make sure alphas the on the same device as samples
-        alphas_cumprod = self.alphas_cumprod.to(dtype=original_samples.dtype)
-        timesteps = timesteps.to(original_samples.device)
+        # Select alphas_cumprod for each timestep in the batch
+        # Shape after indexing: (batch_size,)
+        alphas_cumprod_t = alphas_cumprod[timesteps]
 
-        # TODO: get sqrt alphas
-        sqrt_alpha_prod = torch.sqrt(alphas_cumprod)
-        # sqrt_alpha_prod = None
-        while len(sqrt_alpha_prod.shape) < len(original_samples.shape):
-            sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+        # Compute sqrt(alpha_t) and sqrt(1 - alpha_t)
+        sqrt_alpha_prod = torch.sqrt(alphas_cumprod_t)  # Shape: (batch_size,)
+        sqrt_one_minus_alpha_prod = torch.sqrt(
+            1 - alphas_cumprod_t
+        )  # Shape: (batch_size,)
 
-        # TODO: get sqrt one miucs alphas
-        sqrt_one_minus_alpha_prod = torch.sqrt(1 - alphas_cumprod)
-        # sqrt_one_minus_alpha_prod = None
-        while len(sqrt_one_minus_alpha_prod.shape) < len(original_samples.shape):
-            sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
+        # Reshape for broadcasting: (batch_size, 1, 1, 1)
+        sqrt_alpha_prod = sqrt_alpha_prod.view(-1, 1, 1, 1)
+        sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.view(-1, 1, 1, 1)
 
-        # TODO: add noise to the original samples using the formula (14) from https://arxiv.org/pdf/2006.11239.pdf
+        # Add noise to the original samples
         noisy_samples = (
             sqrt_alpha_prod * original_samples + sqrt_one_minus_alpha_prod * noise
-        )  # might need to use .unsqueeze(-1) here
+        )
+
         return noisy_samples
 
     def step(

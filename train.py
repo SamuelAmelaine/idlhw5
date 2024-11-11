@@ -1,3 +1,4 @@
+### train.py ###
 import os
 import sys
 import argparse
@@ -26,6 +27,7 @@ from utils import (
     save_checkpoint,
 )
 
+from torch.cuda.amp import autocast, GradScaler  # Added for mixed precision
 
 logger = get_logger(__name__)
 
@@ -161,6 +163,14 @@ def parse_args():
         "--ckpt", type=str, default=None, help="checkpoint path for inference"
     )
 
+    # gradient accumulation
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of steps to accumulate gradients before updating",
+    )
+
     # first parse of command-line args to check for config file
     args = parser.parse_args()
 
@@ -177,6 +187,9 @@ def parse_args():
 
 
 def main():
+
+    # Enable CuDNN benchmark for optimized performance
+    torch.backends.cudnn.benchmark = True
 
     # parse arguments
     args = parse_args()
@@ -196,7 +209,7 @@ def main():
     if args.distributed:
         logger.info(
             "Training in distributed mode with multiple processes, 1 device per process."
-            f"Process {args.rank}, total {args.world_size}, device {args.device}."
+            f" Process {args.rank}, total {args.world_size}, device {args.device}."
         )
     else:
         logger.info(f"Training with a single process on 1 device ({args.device}).")
@@ -204,26 +217,22 @@ def main():
 
     # setup dataset
     logger.info("Creating dataset")
-    # TODO: use transform to normalize your images to [-1, 1]
-    # TODO: you can also use horizontal flip
+    # Implement horizontal flip as part of transforms
     transform = transforms.Compose(
         [
             transforms.Resize((args.image_size, args.image_size)),
+            transforms.RandomHorizontalFlip(),  # Added horizontal flip
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ]
     )
-    # TOOD: use image folder for your train dataset
     train_dataset = datasets.ImageFolder(args.data_dir, transform=transform)
 
-    # TODO: setup dataloader
+    # setup dataloader
     sampler = None
     if args.distributed:
-        # TODO: distributed sampler
         sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    # TODO: shuffle
     shuffle = False if sampler else True
-    # TODO dataloader
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -231,6 +240,8 @@ def main():
         num_workers=args.num_workers,
         pin_memory=True,
         sampler=sampler,
+        prefetch_factor=4,  # Increased prefetch factor
+        persistent_workers=True,  # Enabled persistent workers
     )
 
     # calculate total batch_size
@@ -264,11 +275,11 @@ def main():
         conditional=args.use_cfg,
         c_dim=args.unet_ch,
     )
-    # preint number of parameters
+    # print number of parameters
     num_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
     logger.info(f"Number of parameters: {num_params / 10 ** 6:.2f}M")
 
-    # TODO: ddpm shceduler
+    # ddpm scheduler
     scheduler = DDPMScheduler(
         num_train_timesteps=args.num_train_timesteps,
         beta_start=args.beta_start,
@@ -276,6 +287,8 @@ def main():
         beta_schedule=args.beta_schedule,
         variance_type=args.variance_type,
         prediction_type=args.prediction_type,
+        clip_sample=args.clip_sample,
+        clip_sample_range=args.clip_sample_range,
     )
 
     # NOTE: this is for latent DDPM
@@ -303,20 +316,27 @@ def main():
     if class_embedder:
         class_embedder = class_embedder.to(device)
 
-    # TODO: setup optimizer
+    # setup optimizer
     optimizer = torch.optim.Adam(
         unet.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
-    # TODO: setup scheduler
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda epoch: 0.1 ** (epoch // 10)
+    # setup learning rate scheduler (optional)
+    scheduler_lr = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.num_epochs, eta_min=1e-6
     )
 
+    # setup mixed precision
+    if args.mixed_precision in ["fp16", "bf16"]:
+        scaler = GradScaler()
+        logger.info(f"Using mixed precision: {args.mixed_precision}")
+    else:
+        scaler = None
+
     # max train steps
-    num_update_steps_per_epoch = len(train_loader)
+    num_update_steps_per_epoch = len(train_loader) // args.gradient_accumulation_steps
     args.max_train_steps = args.num_epochs * num_update_steps_per_epoch
 
-    #  setup distributed training
+    # setup distributed training
     if args.distributed:
         unet = torch.nn.parallel.DistributedDataParallel(
             unet,
@@ -337,7 +357,7 @@ def main():
         unet_wo_ddp = unet
         class_embedder_wo_ddp = class_embedder
     vae_wo_ddp = vae
-    # TODO: setup ddim
+    # setup ddim
     if args.use_ddim:
         scheduler_wo_ddp = DDIMScheduler(
             num_inference_steps=args.num_inference_steps,
@@ -350,8 +370,8 @@ def main():
     else:
         scheduler_wo_ddp = scheduler
 
-    # TODO: setup evaluation pipeline
-    # NOTE: this pipeline is not differentiable and only for evaluatin
+    # setup evaluation pipeline
+    # NOTE: this pipeline is not differentiable and only for evaluating
     pipeline = DDPMPipeline(
         unet=unet,
         scheduler=scheduler,
@@ -402,76 +422,86 @@ def main():
 
         loss_m = AverageMeter()
 
-        # TODO: set unet and scheduelr to train
+        # set unet and scheduler to train
         unet.train()
         scheduler.train()
 
-        # TODO: finish this
         for step, (images, labels) in enumerate(train_loader):
 
             batch_size = images.size(0)
 
-            # TODO: send to device
-            images = images.to(device)
-            labels = labels.to(device)
+            # send to device
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
             # NOTE: this is for latent DDPM
             if vae is not None:
-                # use vae to encode images as latents
                 images = vae.encode(images).latent_dist.sample()
-                # NOTE: do not change  this line, this is to ensure the latent has unit std
                 images = images * 0.1845
 
-            # TODO: zero grad optimizer
+            # zero grad optimizer
+            optimizer.zero_grad()
 
             # NOTE: this is for CFG
             if class_embedder is not None:
-                # TODO: use class embedder to get class embeddings
                 class_emb = class_embedder(labels)
             else:
-                # NOTE: if not cfg, set class_emb to None
                 class_emb = None
 
-            # TODO: sample noise
+            # sample noise
             noise = torch.randn_like(images)
 
-            # TODO: sample timestep t
+            # sample timestep t
             timesteps = torch.randint(
                 0, args.num_train_timesteps, (batch_size,), device=device
             )
 
-            # TODO: add noise to images using scheduler
+            # add noise to images using scheduler
             noisy_images = scheduler.add_noise(images, noise, timesteps)
 
-            # TODO: model prediction
-            model_pred = unet(noisy_images, timesteps, class_emb)
+            # forward pass with mixed precision
+            with autocast(enabled=(args.mixed_precision in ["fp16", "bf16"])):
+                model_pred = unet(noisy_images, timesteps, class_emb)
+                if args.prediction_type == "epsilon":
+                    target = noise
+                loss = F.mse_loss(model_pred, target)
+                loss = loss / args.gradient_accumulation_steps  # Normalize loss
 
-            if args.prediction_type == "epsilon":
-                target = noise
+            # backward pass
+            if scaler:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
-            # TODO: calculate loss
-            loss = F.mse_loss(model_pred, target)
+            # gradient accumulation
+            if (step + 1) % args.gradient_accumulation_steps == 0:
+                if scaler:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    if args.grad_clip:
+                        torch.nn.utils.clip_grad_norm_(
+                            unet.parameters(), args.grad_clip
+                        )
+                    optimizer.step()
+                optimizer.zero_grad()
 
             # record loss
-            loss_m.update(loss.item())
-
-            # backward and step
-            loss.backward()
-            # TODO: grad clip
-            if args.grad_clip:
-                torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
-
-            # TODO: step your optimizer
-            optimizer.step()
+            loss_m.update(loss.item() * args.gradient_accumulation_steps)
 
             progress_bar.update(1)
 
             # logger
-            if step % 100 == 0 and is_primary(args):
+            if step % 500 == 0 and is_primary(args):  # Increased logging interval
                 logger.info(
-                    f"Epoch {epoch+1}/{args.num_epochs}, Step {step}/{num_update_steps_per_epoch}, Loss {loss.item()} ({loss_m.avg})"
+                    f"Epoch {epoch+1}/{args.num_epochs}, Step {step}/{num_update_steps_per_epoch}, Loss {loss.item() * args.gradient_accumulation_steps} ({loss_m.avg})"
                 )
                 wandb_logger.log({"loss": loss_m.avg})
+
+        # update learning rate scheduler
+        scheduler_lr.step()
 
         # validation
         # send unet to evaluation mode
@@ -483,11 +513,11 @@ def main():
         if args.use_cfg:
             # random sample 4 classes
             classes = torch.randint(0, args.num_classes, (4,), device=device)
-            # TODO: fill pipeline
+            # fill pipeline
             gen_images = pipeline(classes)
         else:
-            # TODO: fill pipeline
-            gen_images = pipeline(classes)
+            # fill pipeline
+            gen_images = pipeline(None)  # Pass None if not using CFG
 
         # create a blank canvas for the grid
         grid_image = Image.new("RGB", (4 * args.image_size, 1 * args.image_size))
