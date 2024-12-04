@@ -6,6 +6,7 @@ import random
 import numpy as np
 
 import torch 
+import torch.nn.functional as F
 
 
 def seed_everything(seed):
@@ -24,10 +25,7 @@ def randn_tensor(
     dtype: Optional["torch.dtype"] = None,
     layout: Optional["torch.layout"] = None,
 ):
-    """A helper function to create random tensors on the desired `device` with the desired `dtype`. When
-    passing a list of generators, you can seed each batch size individually. If CPU generators are passed, the tensor
-    is always created on the CPU.
-    """
+    """A helper function to create random tensors on the desired `device` with the desired `dtype`."""
     # device on which tensor is created defaults to device
     rand_device = device
     batch_size = shape[0]
@@ -71,3 +69,34 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def verify_model_gradients(model, criterion, device):
+    """Verify model gradients using a dummy forward pass."""
+    model.train()
+    
+    # Create dummy inputs
+    batch_size = 2
+    channels = model.input_ch if hasattr(model, 'input_ch') else 3
+    size = model.input_size if hasattr(model, 'input_size') else 64
+    
+    x = torch.randn(batch_size, channels, size, size).to(device)
+    t = torch.randint(0, 1000, (batch_size,)).to(device)
+    noise = torch.randn_like(x)
+    
+    # Forward pass
+    with torch.enable_grad():
+        pred = model(x, t)
+        loss = criterion(pred, noise)
+        loss.backward()
+    
+    # Check gradients
+    grad_status = {}
+    for name, param in model.named_parameters():
+        grad_status[name] = {
+            'requires_grad': param.requires_grad,
+            'grad_is_none': param.grad is None if param.requires_grad else "N/A",
+            'grad_norm': torch.norm(param.grad).item() if param.grad is not None else 0
+        }
+    
+    return grad_status
