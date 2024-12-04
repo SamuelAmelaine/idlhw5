@@ -423,7 +423,7 @@ def main():
     logger.info(f"Trainable parameters: {trainable_params:,}")
     
     # Verify gradients are enabled
-    for name, param in unet.parameters():
+    for name, param in unet.named_parameters():
         if not param.requires_grad:
             logger.warning(f"Parameter {name} has requires_grad=False")
     
