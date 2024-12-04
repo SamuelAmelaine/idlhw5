@@ -219,14 +219,18 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     for step, (images, labels) in enumerate(train_loader):
         batch_size = images.size(0)
         
-        # Move data to device
+        # Move data to device and convert dtype if using mixed precision
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         
         # Handle VAE encoding if using latent DDPM
         if vae is not None:
             with torch.no_grad():
-                images = vae.encode(images).sample()
+                if args.mixed_precision in ["fp16", "bf16"]:
+                    with torch.cuda.amp.autocast():
+                        images = vae.encode(images).sample()
+                else:
+                    images = vae.encode(images).sample()
                 images = images * 0.18215
         
         # Zero gradients
@@ -397,7 +401,6 @@ def main():
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        transforms.ConvertImageDtype(torch.float16),  # Pre-convert to fp16
     ])
     
     train_dataset = datasets.ImageFolder(args.data_dir, transform=transform)
