@@ -95,18 +95,33 @@ class AttnBlock(nn.Module):
         k = self.proj_k(h)
         v = self.proj_v(h)
 
-        q = q.permute(0, 2, 3, 1).view(B, H * W, C).contiguous()
-        k = k.view(B, C, H * W).contiguous()
-        w = torch.bmm(q, k) * (int(C) ** (-0.5))
-        assert list(w.shape) == [B, H * W, H * W]
+        # Memory-efficient attention
+        q = q.permute(0, 2, 3, 1).reshape(B, H * W, C)
+        k = k.reshape(B, C, H * W)
+        
+        # Compute attention scores in chunks
+        chunk_size = 1024  # Adjust based on available memory
+        num_chunks = (H * W + chunk_size - 1) // chunk_size
+        
+        w = torch.zeros(B, H * W, H * W, device=x.device)
+        for i in range(num_chunks):
+            start = i * chunk_size
+            end = min(start + chunk_size, H * W)
+            w[:, start:end] = torch.bmm(
+                q[:, start:end], 
+                k
+            ) * (int(C) ** (-0.5))
+        
         w = F.softmax(w, dim=-1)
-
-        v = v.permute(0, 2, 3, 1).view(B, H * W, C).contiguous()
+        del q, k  # Free memory
+        
+        v = v.permute(0, 2, 3, 1).reshape(B, H * W, C)
         h = torch.bmm(w, v)
-        assert list(h.shape) == [B, H * W, C]
-        h = h.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+        del w, v  # Free memory
+        
+        h = h.reshape(B, H, W, C).permute(0, 3, 1, 2)
         h = self.proj(h)
-
+        
         return x + h
 
 

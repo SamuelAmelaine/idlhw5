@@ -417,7 +417,7 @@ def main():
     )
     
     # Set up mixed precision training
-    scaler = GradScaler() if args.mixed_precision in ["fp16", "bf16"] else None
+    scaler = torch.amp.GradScaler('cuda') if args.mixed_precision in ["fp16", "bf16"] else None
     
     # Initialize wandb
     wandb_logger = None
