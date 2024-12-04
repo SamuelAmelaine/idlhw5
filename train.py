@@ -31,6 +31,159 @@ from torch.cuda.amp import autocast, GradScaler
 
 logger = get_logger(__name__)
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train a model.")
+
+    # config file
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/ddpm.yaml",
+        help="config file used to specify parameters",
+    )
+
+    # data
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="./data/imagenet100_128x128/train",
+        help="data folder",
+    )
+    parser.add_argument("--image_size", type=int, default=128, help="image size")
+    parser.add_argument("--batch_size", type=int, default=4, help="per gpu batch size")
+    parser.add_argument("--num_workers", type=int, default=8, help="batch size")
+    parser.add_argument(
+        "--num_classes", type=int, default=100, help="number of classes in dataset"
+    )
+
+    # training
+    parser.add_argument("--run_name", type=str, default=None, help="run_name")
+    parser.add_argument(
+        "--output_dir", type=str, default="experiments", help="output folder"
+    )
+    parser.add_argument("--num_epochs", type=int, default=10)
+    parser.add_argument(
+        "--learning_rate", type=float, default=1e-4, help="learning rate"
+    )
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="weight decay")
+    parser.add_argument("--grad_clip", type=float, default=1.0, help="gradient clip")
+    parser.add_argument("--seed", type=int, default=42, help="random seed")
+    parser.add_argument(
+        "--mixed_precision",
+        type=str,
+        default="none",
+        choices=["fp16", "bf16", "fp32", "none"],
+        help="mixed precision",
+    )
+
+    # ddpm
+    parser.add_argument(
+        "--num_train_timesteps", type=int, default=1000, help="ddpm training timesteps"
+    )
+    parser.add_argument(
+        "--num_inference_steps", type=int, default=200, help="ddpm inference timesteps"
+    )
+    parser.add_argument(
+        "--beta_start", type=float, default=0.0002, help="ddpm beta start"
+    )
+    parser.add_argument("--beta_end", type=float, default=0.02, help="ddpm beta end")
+    parser.add_argument(
+        "--beta_schedule", type=str, default="linear", help="ddpm beta schedule"
+    )
+    parser.add_argument(
+        "--variance_type", type=str, default="fixed_small", help="ddpm variance type"
+    )
+    parser.add_argument(
+        "--prediction_type", type=str, default="epsilon", help="ddpm epsilon type"
+    )
+    parser.add_argument(
+        "--clip_sample",
+        type=str2bool,
+        default=True,
+        help="whether to clip sample at each step of reverse process",
+    )
+    parser.add_argument(
+        "--clip_sample_range", type=float, default=1.0, help="clip sample range"
+    )
+
+    # unet
+    parser.add_argument(
+        "--unet_in_size", type=int, default=128, help="unet input image size"
+    )
+    parser.add_argument(
+        "--unet_in_ch", type=int, default=3, help="unet input channel size"
+    )
+    parser.add_argument("--unet_ch", type=int, default=128, help="unet channel size")
+    parser.add_argument(
+        "--unet_ch_mult",
+        type=int,
+        default=[1, 2, 2, 2],
+        nargs="+",
+        help="unet channel multiplier",
+    )
+    parser.add_argument(
+        "--unet_attn",
+        type=int,
+        default=[1, 2, 3],
+        nargs="+",
+        help="unet attantion stage index",
+    )
+    parser.add_argument(
+        "--unet_num_res_blocks", type=int, default=2, help="unet number of res blocks"
+    )
+    parser.add_argument("--unet_dropout", type=float, default=0.0, help="unet dropout")
+
+    # vae
+    parser.add_argument(
+        "--latent_ddpm", type=str2bool, default=False, help="use vqvae for latent ddpm"
+    )
+
+    # cfg
+    parser.add_argument(
+        "--use_cfg",
+        type=str2bool,
+        default=False,
+        help="use cfg for conditional (latent) ddpm",
+    )
+    parser.add_argument(
+        "--cfg_guidance_scale", type=float, default=2.0, help="cfg for inference"
+    )
+
+    # ddim sampler for inference
+    parser.add_argument(
+        "--use_ddim",
+        type=str2bool,
+        default=False,
+        help="use ddim sampler for inference",
+    )
+
+    # checkpoint path for inference
+    parser.add_argument(
+        "--ckpt", type=str, default=None, help="checkpoint path for inference"
+    )
+
+    # gradient accumulation
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of steps to accumulate gradients before updating",
+    )
+
+    # first parse of command-line args to check for config file
+    args = parser.parse_args()
+
+    # If a config file is specified, load it and set defaults
+    if args.config is not None:
+        with open(args.config, "r", encoding="utf-8") as f:
+            file_yaml = yaml.YAML()
+            config_args = file_yaml.load(f)
+            parser.set_defaults(**config_args)
+
+    # re-parse command-line args to overwrite with any command-line inputs
+    args = parser.parse_args()
+    return args
+
 def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader, 
                 optimizer, scaler, device, wandb_logger):
     """Single epoch training function"""

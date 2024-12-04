@@ -1,87 +1,87 @@
-# IDL24Fall-HW5
+# DDPM Implementation
 
-# Starter Code Usage
+A PyTorch implementation of Denoising Diffusion Probabilistic Models (DDPM) with support for:
+- Basic DDPM
+- DDIM sampling
+- Latent DDPM with VAE
+- Classifier-Free Guidance
 
-**Training**
+## Installation
 
+1. Clone the repository:
+```bash
+git clone https://github.com/YOUR_USERNAME/REPO_NAME.git
+cd REPO_NAME
 ```
-python train.py --config configs/ddpm.yaml
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
 ```
 
-**Inference and Evaluating**
-
-```
-python inference.py inference.py
-```
-
-# 1. Download the data
-
-Please first download the data from here: https://drive.google.com/drive/u/0/folders/1Hr8LU7HHPEad8ALmMo5cvisazsm6zE8Z
-
-After download please unzip the data with
-
-```
+3. Download the data:
+```bash
+# Download ImageNet-100 dataset
+wget https://drive.google.com/drive/u/0/folders/1Hr8LU7HHPEad8ALmMo5cvisazsm6zE8Z/imagenet100_128x128.tar.gz
 tar -xvf imagenet100_128x128.tar.gz
 ```
 
-# 2.Implementing DDPM from Scratch
-
-This homework will start from implementing DDPM from scratch.
-
-We provide the basic code structure for you and you will be implementing the following modules (by filling all TODOs)):
-
-```
-1. pipelines/ddpm.py
-2. schedulers/scheduling_ddpm.py
-3. train.py
-4. configs/ddpm.yaml
+4. Download pretrained VAE (for Latent DDPM):
+```bash
+mkdir pretrained
+# Download VAE checkpoint to pretrained/model.ckpt
 ```
 
-A very basic U-Net architecture is provided to you, and you will need to improve the architecture for better performacne.
+## Training
 
-# 3. Implementing DDIM
-
-Implement the DDIM from scratch:
-
-```
-1. schedulers/scheduling_ddpm.py
-2. create a config with ddim by setting use_ddim to True
+### Basic DDPM:
+```bash
+python train.py --config configs/ddpm.yaml
 ```
 
-**NOTE: you need to set use_ddim to TRUE**
-
-# 4. Implementing Latent DDPM
-
-Implement the Latent DDPM.
-
-The pre-trained weights of VAE and basic modules are provided. 
-
-Download the pretrained weight here: and put it under a folder named 'pretrained' (create one if it doesn't exsit)
-
-You need to implement:
-
-```
-1. models/vae.py
-2. train.py with vae related stuff
-3. pipeline/ddpm.py with vae related stuff
+### With Classifier-Free Guidance:
+```bash
+python train.py --config configs/ddpm.yaml --use_cfg True
 ```
 
-**NOTE: you need to set use_vae to TRUE**
-
-# 5. Implementing CFG
-
-Implement CFG
-
-```
-1. models/class_embedder.py
-2. train.py with cfg related stuff
-3. pipeline/ddpm.py with cfg related stuff
+### Latent DDPM:
+```bash
+python train.py --config configs/ddpm.yaml --latent_ddpm True
 ```
 
-**NOTE: you need to set use_cfg to TRUE**
-
-# 6. Evaluation
-
+### DDIM:
+```bash
+python train.py --config configs/ddpm.yaml --use_ddim True
 ```
-inference.py
+
+## Inference
+
+```bash
+python inference.py --config configs/ddpm.yaml --ckpt path/to/checkpoint.pth
+```
+
+## Project Structure
+```
+.
+├── configs/
+│   └── ddpm.yaml          # Configuration file
+├── models/                # Model implementations
+├── schedulers/            # DDPM and DDIM schedulers
+├── pipelines/             # Generation pipeline
+├── utils/                 # Utility functions
+├── train.py              # Training script
+└── inference.py          # Inference script
+```
+
+## Citation
+
+If you use this code, please cite the original DDPM paper:
+
+```bibtex
+@article{ho2020denoising,
+  title={Denoising Diffusion Probabilistic Models},
+  author={Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  journal={arXiv preprint arXiv:2006.11239},
+  year={2020}
+}
 ```
