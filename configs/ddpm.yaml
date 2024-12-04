@@ -2,7 +2,7 @@ run_name: ddpm
 seed: 42
 data_dir: ./data/imagenet100_128x128/train
 image_size: 128
-batch_size: 128
+batch_size: 16
 num_workers: 8
 num_classes: 100
 num_epochs: 100
@@ -28,9 +28,9 @@ clip_sample_range: 1.0
 # Model architecture
 unet_in_size: 128
 unet_in_ch: 3
-unet_ch: 128
-unet_ch_mult: [1, 2, 2, 4]  # Increased capacity
-unet_attn: [1, 2]  # Added attention layers
+unet_ch: 64
+unet_ch_mult: [1, 2, 2, 2]
+unet_attn: [1]
 unet_num_res_blocks: 2
 unet_dropout: 0.1
 
@@ -46,3 +46,6 @@ output_dir: experiments
 # Add these under training settings
 warmup_epochs: 2
 min_lr: 2e-6  # Minimum learning rate
+
+# Add gradient checkpointing
+use_gradient_checkpointing: True

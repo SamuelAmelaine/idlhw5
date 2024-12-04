@@ -191,7 +191,13 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     scheduler.train()
     loss_meter = AverageMeter()
     
+    # Clear cache before training
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     progress_bar = tqdm(range(len(train_loader)), disable=not is_primary(args))
+    
+    optimizer.zero_grad()  # Move outside the loop
     
     for step, (images, labels) in enumerate(train_loader):
         batch_size = images.size(0)
@@ -232,7 +238,7 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
             loss = F.mse_loss(model_pred, target)
             loss = loss / args.gradient_accumulation_steps
         
-        # Backward pass
+        # Backward pass with gradient accumulation
         if scaler:
             scaler.scale(loss).backward()
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -241,12 +247,14 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
                     torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
                 scaler.step(optimizer)
                 scaler.update()
+                optimizer.zero_grad()  # Only zero gradients after accumulation
         else:
             loss.backward()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.grad_clip:
                     torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
                 optimizer.step()
+                optimizer.zero_grad()  # Only zero gradients after accumulation
         
         # Update metrics
         loss_meter.update(loss.item() * args.gradient_accumulation_steps)
@@ -415,6 +423,15 @@ def main():
         vae=vae,
         class_embedder=class_embedder,
     )
+    
+    # After creating the UNet model
+    if args.use_gradient_checkpointing:
+        unet.enable_gradient_checkpointing()
+    
+    # At the start of main()
+    import os
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+    torch.backends.cudnn.benchmark = True
     
     # Training loop
     for epoch in range(args.num_epochs):

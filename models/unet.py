@@ -65,6 +65,9 @@ class UNet(nn.Module):
         init.xavier_uniform_(self.head[-1].weight, gain=1e-5)
         init.zeros_(self.head[-1].bias)
 
+    def enable_gradient_checkpointing(self):
+        self.use_checkpointing = True
+
     def forward(self, x, t, c=None):
         # 1. time
         if not torch.is_tensor(t):
@@ -80,8 +83,12 @@ class UNet(nn.Module):
         # Downsampling
         h = self.stem(x)
         hs = [h]
-        for layer in self.downblocks:
-            h = layer(h, temb, c)
+        for i, layer in enumerate(self.downblocks):
+            if hasattr(self, 'use_checkpointing') and self.use_checkpointing:
+                from torch.utils.checkpoint import checkpoint
+                h = checkpoint(layer, h, temb, c)
+            else:
+                h = layer(h, temb, c)
             hs.append(h)
         # Middle
         for layer in self.middleblocks:
