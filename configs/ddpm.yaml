@@ -1,25 +1,44 @@
 run_name: ddpm
 seed: 42
-data_dir: ./data
+data_dir: ./data/imagenet100_128x128/train
 image_size: 128
 batch_size: 128
-num_workers: 4
-num_classes: 1000
+num_workers: 8
+num_classes: 100
 num_epochs: 100
-learning_rate: 0.0002
+learning_rate: 2e-4
 weight_decay: 0.0
+grad_clip: 1.0
+
+# Mixed precision training
+mixed_precision: "fp16"  # Options: "fp16", "bf16", "none"
+gradient_accumulation_steps: 1
+
+# Diffusion model parameters
 num_train_timesteps: 1000
 num_inference_steps: 50
 beta_start: 0.0001
 beta_end: 0.02
 beta_schedule: linear
-
 variance_type: fixed_small
-predictor_type: epsilon
+prediction_type: epsilon
+clip_sample: True
+clip_sample_range: 1.0
+
+# Model architecture
 unet_in_size: 128
 unet_in_ch: 3
 unet_ch: 128
+unet_ch_mult: [1, 2, 2, 4]  # Increased capacity
+unet_attn: [1, 2]  # Added attention layers
 unet_num_res_blocks: 2
-unet_ch_mult: [1, 2, 2, 4]
-unet_attn: [2, 3]
-unet_dropout: 0.0
+unet_dropout: 0.1
+
+# Advanced features
+use_ddim: False
+latent_ddpm: False
+use_cfg: False
+cfg_guidance_scale: 3.0
+
+# Output settings
+output_dir: experiments

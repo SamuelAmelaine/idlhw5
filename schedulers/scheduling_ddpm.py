@@ -117,45 +117,25 @@ class DDPMScheduler(nn.Module):
 
     def _get_variance(self, t):
         """
-        This is one of the most important functions in the DDPM. It calculates the variance $sigma_t$ for a given timestep.
-
-        Args:
-            t (`int`): The current timestep.
-
-        Return:
-            variance (`torch.Tensor`): The variance $sigma_t$ for the given timestep.
+        Calculate variance for timestep t according to DDPM paper.
         """
-
-        # TODO: calculate $beta_t$ for the current timestep using the cumulative product of alphas
         prev_t = self.previous_timestep(t)
         alpha_prod_t = self.alphas_cumprod[t]
         alpha_prod_t_prev = self.alphas_cumprod[prev_t]
         current_beta_t = 1 - alpha_prod_t / alpha_prod_t_prev
 
-        # TODO: For t > 0, compute predicted variance $\beta_t$ (see formula (6) and (7) from https://arxiv.org/pdf/2006.11239.pdf)
-        # and sample from it to get previous sample
-        # x_{t-1} ~ N(pred_prev_sample, variance) == add variance to pred_sample
-        variance = current_beta_t * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
-
-        # we always take the log of variance, so clamp it to ensure it's not 0
-        variance = torch.clamp(variance, min=1e-20)
-
-        # TODO: we start with two types of variance as mentioned in Section 3.2 of https://arxiv.org/pdf/2006.11239.pdf
-        # 1. fixed_small: $\sigma_t = \beta_t$, this one is optimal for $x_0$ being deterministic
-        # 2. fixed_large: $\sigma_t^2 = \beta$, this one is optimal for $x_0 \sim mathcal{N}(0, 1)$
+        # Calculate variance based on variance_type
         if self.variance_type == "fixed_small":
-            # TODO: fixed small variance
+            # For fixed_small, variance is simply beta_t
             variance = current_beta_t
         elif self.variance_type == "fixed_large":
-            # TODO: fixed large variance
+            # For fixed_large, use the formula from the DDPM paper
             variance = current_beta_t * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
-            # TODO: small hack: set the initial (log-)variance like so to get a better decoder log likelihood.
+            # Small hack for better decoder log likelihood
             if t == 1:
-                variance = variance
+                variance = current_beta_t
         else:
-            raise NotImplementedError(
-                f"Variance type {self.variance_type} not implemented."
-            )
+            raise NotImplementedError(f"Variance type {self.variance_type} not implemented.")
 
         return variance
 
@@ -210,82 +190,48 @@ class DDPMScheduler(nn.Module):
         generator=None,
     ) -> torch.Tensor:
         """
-        Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
-        process from the learned model outputs (most often the predicted noise).
-
-        Args:
-            model_output (`torch.Tensor`):
-                The direct output from learned diffusion model.
-            timestep (`float`):
-                The current discrete timestep in the diffusion chain.
-            sample (`torch.Tensor`):
-                A current instance of a sample created by the diffusion process.
-            generator (`torch.Generator`, *optional*):
-                A random number generator.
-
-        Returns:
-            pred_prev_sample (`torch.Tensor`):
-                The predicted previous sample.
+        Predict the sample from the previous timestep by reversing the SDE.
         """
-
         t = timestep
         prev_t = self.previous_timestep(t)
 
-        # TODO: 1. compute alphas, betas
+        # 1. compute alphas, betas
         alpha_prod_t = self.alphas_cumprod[t]
         alpha_prod_t_prev = self.alphas_cumprod[prev_t]
-        beta_prod_t = None
-        beta_prod_t_prev = None
+        beta_prod_t = 1 - alpha_prod_t
+        beta_prod_t_prev = 1 - alpha_prod_t_prev
         current_alpha_t = self.alphas[t]
         current_beta_t = self.betas[t]
 
-        # TODO: 2. compute predicted original sample from predicted noise also called
-        # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
+        # 2. compute predicted original sample from predicted noise
         if self.prediction_type == "epsilon":
-            pred_original_sample = (
-                sample - torch.sqrt(1 - alpha_prod_t) * model_output
-            ) / torch.sqrt(alpha_prod_t)
+            pred_original_sample = (sample - torch.sqrt(1 - alpha_prod_t) * model_output) / torch.sqrt(alpha_prod_t)
         else:
-            raise NotImplementedError(
-                f"Prediction type {self.prediction_type} not implemented."
-            )
+            raise NotImplementedError(f"Prediction type {self.prediction_type} not implemented.")
 
-        # TODO: 3. Clip or threshold "predicted x_0" (for better sampling quality)
+        # 3. Clip predicted x0
         if self.clip_sample:
-            pred_original_sample = pred_original_sample.clamp(
-                -self.clip_sample_range, self.clip_sample_range
-            )
+            pred_original_sample = pred_original_sample.clamp(-self.clip_sample_range, self.clip_sample_range)
 
-        # TODO: 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
-        # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-        pred_original_sample_coeff = (
-            torch.sqrt(alpha_prod_t_prev) * current_beta_t / (1 - alpha_prod_t)
-        )
-        current_sample_coeff = (
-            torch.sqrt(alpha_prod_t) * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
-        )
+        # 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
+        pred_original_sample_coeff = torch.sqrt(alpha_prod_t_prev) * current_beta_t / (1 - alpha_prod_t)
+        current_sample_coeff = torch.sqrt(alpha_prod_t) * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t)
 
         # 5. Compute predicted previous sample µ_t
-        # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-        pred_prev_sample = (
-            pred_original_sample_coeff * pred_original_sample
-            + current_sample_coeff * model_output
-        )
+        pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * sample
 
         # 6. Add noise
         variance = 0
         if t > 0:
-            device = model_output.device
-            variance_noise = randn_tensor(
+            noise = randn_tensor(
                 model_output.shape,
                 generator=generator,
-                device=device,
+                device=model_output.device,
                 dtype=model_output.dtype,
             )
-            # TODO: use self,get_variance and variance_noise
-            variance = self._get_variance(t) ** 0.5 * variance_noise
+            variance = self._get_variance(t) ** 0.5 * noise
 
-        # TODO: add variance to prev_sample
-        pred_prev_sample += variance
+        # Add variance to pred_prev_sample
+        pred_prev_sample = pred_prev_sample + variance
 
         return pred_prev_sample

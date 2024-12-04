@@ -10,15 +10,8 @@ class DDPMPipeline:
     def __init__(self, unet, scheduler, vae=None, class_embedder=None):
         self.unet = unet
         self.scheduler = scheduler
-
-        # NOTE: this is for latent DDPM
-        self.vae = None
-        if vae is not None:
-            self.vae = vae
-
-        # NOTE: this is for CFG
-        if class_embedder is not None:
-            self.class_embedder = class_embedder
+        self.vae = vae
+        self.class_embedder = class_embedder
 
     def numpy_to_pil(self, images):
         """
@@ -62,83 +55,73 @@ class DDPMPipeline:
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         device=None,
     ):
-        image_shape = (
-            batch_size,
-            self.unet.input_ch,
-            self.unet.input_size,
-            self.unet.input_size,
-        )
+        # Set device if not provided
         if device is None:
             device = next(self.unet.parameters()).device
 
-        # NOTE: this is for CFG
-        if classes is not None or guidance_scale is not None:
-            assert hasattr(self, "class_embedder"), "class_embedder is not defined"
-
+        # Handle class conditioning
         if classes is not None:
-            # convert classes to tensor
             if isinstance(classes, int):
-                classes = [classes] * batch_size
+                classes = torch.tensor([classes] * batch_size, device=device)
             elif isinstance(classes, list):
-                assert (
-                    len(classes) == batch_size
-                ), "Length of classes must be equal to batch_size"
                 classes = torch.tensor(classes, device=device)
+            
+            # Get class embeddings
+            class_embeds = self.class_embedder(classes)
+            if guidance_scale is not None and guidance_scale > 1:
+                # For classifier free guidance, we need to do two forward passes.
+                # Here we create a encoder_hidden_states, which is twice the batch size
+                uncond_embeds = self.class_embedder(torch.tensor([self.class_embedder.num_classes] * batch_size, device=device))
+                class_embeds = torch.cat([uncond_embeds, class_embeds])
 
-            # TODO: get uncond classes
-            uncond_classes = None
-            # TODO: get class embeddings from classes
-            class_embeds = None
-            # TODO: get uncon class embeddings
-            uncond_embeds = None
+        # Create initial noise
+        latents = randn_tensor(
+            (batch_size, self.unet.input_ch, self.unet.input_size, self.unet.input_size),
+            generator=generator,
+            device=device,
+        )
 
-        # TODO: starts with random noise
-        image = randn_tensor(image_shape, generator=generator, device=device)
+        # Scale the latents if using VAE
+        if self.vae is not None:
+            latents = latents * 0.18215
 
-        # TODO: set step values using set_timesteps of scheduler
-        # self.scheduler = None # this template was provided by them, I think it's wrong
-        # my code
+        # Set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device)
 
-        # TODO: inverse diffusion process with for loop
+        # Denoising loop
         for t in self.progress_bar(self.scheduler.timesteps):
-
-            # NOTE: this is for CFG
-            if guidance_scale is not None or guidance_scale != 1.0:
-                # TODO: implement cfg
-                model_input = None
-                c = None
+            # Expand latents for classifier free guidance
+            if guidance_scale is not None and guidance_scale > 1:
+                latent_model_input = torch.cat([latents] * 2)
+                timestep_batch = torch.cat([t.unsqueeze(0)] * 2)
             else:
-                model_input = None
-                # NOTE: leave c as None if you are not using CFG
-                c = None
+                latent_model_input = latents
+                timestep_batch = t.unsqueeze(0)
 
-            # TODO: 1. predict noise model_output
-            model_output = self.unet(image, t, c)
+            # Predict noise residual
+            if classes is not None and guidance_scale is not None and guidance_scale > 1:
+                noise_pred = self.unet(latent_model_input, timestep_batch, class_embeds)
+                noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            else:
+                c = class_embeds if classes is not None else None
+                noise_pred = self.unet(latent_model_input, timestep_batch, c)
 
-            if guidance_scale is not None or guidance_scale != 1.0:
-                # TODO: implement cfg
-                uncond_model_output, cond_model_output = model_output.chunk(2)
-                model_output = None
+            # Compute previous noisy sample x_t -> x_t-1
+            latents = self.scheduler.step(noise_pred, t, latents, generator=generator)
 
-            # TODO: 2. compute previous image: x_t -> x_t-1 using scheduler
-            image = self.scheduler.step(model_output, t, image)
-
-        # NOTE: this is for latent DDPM
-        # TODO: use VQVAE to get final image
+        # Decode latents if using VAE
         if self.vae is not None:
-            # NOTE: remember to rescale your images
-            image = None
-            # TODO: clamp your images values
-            image = None
+            latents = 1 / 0.18215 * latents
+            image = self.vae.decode(latents)
+        else:
+            image = latents
 
-        # TODO: return final image, re-scale to [0, 1]
-        image_min = image.min(dim=(1, 2, 3), keepdim=True)
-        image_max = image.max(dim=(1, 2, 3), keepdim=True)
-        image = (image - image_min) / (image_max - image_min)
+        # Ensure images are in [0, 1] range
+        image = (image + 1.0) / 2.0
         image = image.clamp(0.0, 1.0)
 
-        # convert to PIL images
+        # Convert to PIL images
         image = image.cpu().permute(0, 2, 3, 1).numpy()
         image = self.numpy_to_pil(image)
 
