@@ -11,6 +11,7 @@ from logging import getLogger as get_logger
 from tqdm import tqdm
 from PIL import Image
 import torch.nn.functional as F
+from time import time
 
 from torchvision import datasets, transforms
 from torchvision.utils import make_grid
@@ -207,6 +208,9 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     
     optimizer.zero_grad()  # Move outside the loop
     
+    start_time = time()
+    images_processed = 0
+    
     for step, (images, labels) in enumerate(train_loader):
         batch_size = images.size(0)
         
@@ -246,23 +250,37 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
             loss = F.mse_loss(model_pred, target)
             loss = loss / args.gradient_accumulation_steps
         
-        # Backward pass with gradient accumulation
+        # Add gradient check
+        if step == 0:  # Check only first step of each epoch
+            # Check if gradients are being computed
+            loss.backward()
+            has_gradients = all(p.grad is not None for p in unet.parameters() if p.requires_grad)
+            if not has_gradients:
+                raise RuntimeError("No gradients were computed! Check requires_grad settings.")
+            optimizer.zero_grad()  # Reset gradients after check
+        
+        # Regular backward pass
         if scaler:
             scaler.scale(loss).backward()
             if (step + 1) % args.gradient_accumulation_steps == 0:
+                # Add gradient norm logging
                 if args.grad_clip:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                    if wandb_logger:
+                        wandb_logger.log({"train/gradient_norm": grad_norm})
                 scaler.step(optimizer)
                 scaler.update()
-                optimizer.zero_grad()  # Only zero gradients after accumulation
+                optimizer.zero_grad()
         else:
             loss.backward()
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                    if wandb_logger:
+                        wandb_logger.log({"train/gradient_norm": grad_norm})
                 optimizer.step()
-                optimizer.zero_grad()  # Only zero gradients after accumulation
+                optimizer.zero_grad()
         
         # Update metrics
         loss_meter.update(loss.item() * args.gradient_accumulation_steps)
@@ -276,6 +294,20 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
             )
             if wandb_logger:
                 wandb_logger.log({"train/loss": loss_meter.avg})
+        
+        images_processed += images.shape[0]
+        
+        if step % 100 == 0 and is_primary(args):
+            elapsed = time() - start_time
+            images_per_sec = images_processed / elapsed
+            logger.info(f"Training speed: {images_per_sec:.2f} images/second")
+            
+            if wandb_logger:
+                wandb_logger.log({
+                    "train/loss": loss_meter.avg,
+                    "train/images_per_second": images_per_sec,
+                    "train/gpu_memory_used": torch.cuda.max_memory_allocated() / 1024**3
+                })
     
     return loss_meter.avg
 
@@ -321,6 +353,11 @@ def validate(args, epoch, pipeline, device, wandb_logger):
         return grid
 
 def main():
+    # Add these lines at the start of main()
+    torch.backends.cuda.matmul.allow_tf32 = True  # Enable TF32 for faster training
+    torch.backends.cudnn.benchmark = True  # Enable cudnn autotuner
+    torch.backends.cudnn.allow_tf32 = True  # Enable TF32 for convolutions
+    
     # Parse arguments
     args = parse_args()
     
@@ -339,10 +376,11 @@ def main():
     
     # Create dataset and dataloader
     transform = transforms.Compose([
-        transforms.Resize((args.image_size, args.image_size)),
+        transforms.Resize((args.image_size, args.image_size), antialias=True),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
+        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+        transforms.ConvertImageDtype(torch.float16),  # Pre-convert to fp16
     ])
     
     train_dataset = datasets.ImageFolder(args.data_dir, transform=transform)
@@ -356,9 +394,11 @@ def main():
         pin_memory=True,
         sampler=sampler,
         drop_last=True,
+        persistent_workers=True,
+        prefetch_factor=2,
     )
     
-    # Create models
+    # Create models with explicit requires_grad
     unet = UNet(
         input_size=args.unet_in_size,
         input_ch=args.unet_in_ch,
@@ -371,6 +411,21 @@ def main():
         conditional=args.use_cfg,
         c_dim=args.unet_ch,
     ).to(device)
+    
+    # Explicitly set requires_grad
+    for param in unet.parameters():
+        param.requires_grad = True
+    
+    # Print parameter count and gradient status
+    total_params = sum(p.numel() for p in unet.parameters())
+    trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
+    logger.info(f"Total parameters: {total_params:,}")
+    logger.info(f"Trainable parameters: {trainable_params:,}")
+    
+    # Verify gradients are enabled
+    for name, param in unet.parameters():
+        if not param.requires_grad:
+            logger.warning(f"Parameter {name} has requires_grad=False")
     
     # Create scheduler
     scheduler = DDPMScheduler(
@@ -445,6 +500,19 @@ def main():
     torch.backends.cuda.max_memory_allocated = 0
     torch.backends.cudnn.benchmark = True
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+    
+    # Verify gradients before training
+    from utils.misc import verify_model_gradients
+    grad_status = verify_model_gradients(unet, F.mse_loss, device)
+    
+    # Log gradient status
+    if is_primary(args):
+        logger.info("Gradient status check:")
+        for name, status in grad_status.items():
+            logger.info(f"{name}:")
+            logger.info(f"  requires_grad: {status['requires_grad']}")
+            logger.info(f"  grad_is_none: {status['grad_is_none']}")
+            logger.info(f"  grad_norm: {status['grad_norm']:.6f}")
     
     # Training loop
     for epoch in range(args.num_epochs):
