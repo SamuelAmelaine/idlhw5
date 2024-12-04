@@ -244,8 +244,8 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
             
             if args.prediction_type == "epsilon":
                 target = noise
+                loss = F.mse_loss(model_pred, target) * 1000
             
-            loss = F.mse_loss(model_pred, target)
             loss = loss / args.gradient_accumulation_steps
         
         # Backward pass
@@ -301,15 +301,19 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     return loss_meter.avg
 
 def validate(args, epoch, pipeline, device, wandb_logger):
-    """Validation with better image grid visualization"""
+    """Validation with progressive inference steps"""
     pipeline.unet.eval()
     
+    # Use fewer steps early in training
+    current_inference_steps = min(
+        20 + (epoch * 5),  # Gradually increase steps
+        args.num_inference_steps
+    )
+    
     with torch.no_grad():
-        # Generate a larger batch of images for better visualization
-        n_samples = 16  # 4x4 grid
         samples = pipeline(
-            batch_size=n_samples,
-            num_inference_steps=args.num_inference_steps,
+            batch_size=16,
+            num_inference_steps=current_inference_steps,
             device=device
         )
         
@@ -339,7 +343,7 @@ def validate(args, epoch, pipeline, device, wandb_logger):
             wandb_logger.log({
                 "generated_samples": wandb.Image(
                     grid_image, 
-                    caption=f"Epoch {epoch+1} | Step {args.num_inference_steps} steps"
+                    caption=f"Epoch {epoch+1} | Step {current_inference_steps} steps"
                 ),
                 "current_epoch": epoch + 1,
             })
