@@ -200,8 +200,75 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     loss_meter = AverageMeter()
     progress_bar = tqdm(range(len(train_loader)), disable=not is_primary(args))
     
+    # Initialize timing and processing counters
+    start_time = time()
+    images_processed = 0
+    
     for step, (images, labels) in enumerate(train_loader):
-        # ... existing training code ...
+        batch_size = images.size(0)
+        
+        # Move data to device
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        
+        # Handle VAE encoding if using latent DDPM
+        if vae is not None:
+            with torch.no_grad():
+                if args.mixed_precision in ["fp16", "bf16"]:
+                    with torch.cuda.amp.autocast():
+                        images = vae.encode(images).sample()
+                else:
+                    images = vae.encode(images).sample()
+                images = images * 0.18215
+        
+        # Zero gradients
+        optimizer.zero_grad()
+        
+        # Get class embeddings if using CFG
+        if class_embedder is not None:
+            class_emb = class_embedder(labels)
+        else:
+            class_emb = None
+            
+        # Sample noise and timesteps
+        noise = torch.randn_like(images)
+        timesteps = torch.randint(0, args.num_train_timesteps, (batch_size,), device=device)
+        
+        # Add noise to images
+        noisy_images = scheduler.add_noise(images, noise, timesteps)
+        
+        # Forward pass with mixed precision
+        with torch.amp.autocast('cuda', enabled=(args.mixed_precision in ["fp16", "bf16"])):
+            model_pred = unet(noisy_images, timesteps, class_emb)
+            
+            if args.prediction_type == "epsilon":
+                target = noise
+            
+            loss = F.mse_loss(model_pred, target)
+            loss = loss / args.gradient_accumulation_steps
+        
+        # Backward pass
+        if scaler:
+            scaler.scale(loss).backward()
+            if (step + 1) % args.gradient_accumulation_steps == 0:
+                if args.grad_clip:
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+        else:
+            loss.backward()
+            if (step + 1) % args.gradient_accumulation_steps == 0:
+                if args.grad_clip:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
+                optimizer.step()
+                optimizer.zero_grad()
+        
+        # Update metrics
+        loss_meter.update(loss.item() * args.gradient_accumulation_steps)
+        images_processed += batch_size
+        progress_bar.update(1)
         
         # Simplified logging
         if step % 100 == 0 and is_primary(args):
