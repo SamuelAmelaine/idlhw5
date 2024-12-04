@@ -211,6 +211,11 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     start_time = time()
     images_processed = 0
     
+    # Add these metrics
+    noise_levels = []
+    pred_norms = []
+    target_norms = []
+    
     for step, (images, labels) in enumerate(train_loader):
         batch_size = images.size(0)
         
@@ -304,6 +309,25 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
                     "train/loss": loss_meter.avg,
                     "train/images_per_second": images_per_sec,
                     "train/gpu_memory_used": torch.cuda.max_memory_allocated() / 1024**3
+                })
+        
+        # Track additional metrics
+        with torch.no_grad():
+            noise_levels.append(timesteps.float().mean().item())
+            pred_norms.append(model_pred.norm().item())
+            target_norms.append(target.norm().item())
+        
+        # Log detailed metrics every 100 steps
+        if step % 100 == 0 and is_primary(args):
+            if wandb_logger:
+                wandb_logger.log({
+                    "train/loss": loss_meter.avg,
+                    "train/noise_level": np.mean(noise_levels[-100:]),
+                    "train/prediction_norm": np.mean(pred_norms[-100:]),
+                    "train/target_norm": np.mean(target_norms[-100:]),
+                    "train/learning_rate": optimizer.param_groups[0]['lr'],
+                    "train/epoch": epoch,
+                    "train/step": step
                 })
     
     return loss_meter.avg
@@ -507,6 +531,14 @@ def main():
             logger.info(f"  grad_is_none: {status['grad_is_none']}")
             logger.info(f"  grad_norm: {status['grad_norm']:.6f}")
     
+    # Add learning rate scheduler
+    from torch.optim.lr_scheduler import CosineAnnealingLR
+    lr_scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=args.num_epochs,
+        eta_min=args.min_lr
+    )
+    
     # Training loop
     for epoch in range(args.num_epochs):
         if args.distributed:
@@ -533,6 +565,16 @@ def main():
                 epoch=epoch,
                 save_dir=os.path.join(args.output_dir, args.run_name, "checkpoints"),
             )
+        
+        # Step the learning rate scheduler
+        lr_scheduler.step()
+        
+        # Log learning rate
+        if is_primary(args) and wandb_logger:
+            wandb_logger.log({
+                "train/learning_rate": optimizer.param_groups[0]['lr'],
+                "epoch": epoch
+            })
     
     # Clean up
     if wandb_logger:

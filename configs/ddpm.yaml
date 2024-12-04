@@ -1,8 +1,8 @@
 run_name: ddpm
 seed: 42
 data_dir: ./data/imagenet100_128x128/train
-image_size: 64
-batch_size: 64
+image_size: 128
+batch_size: 128
 num_workers: 4
 num_classes: 100
 num_epochs: 50
@@ -26,8 +26,8 @@ clip_sample: True
 clip_sample_range: 1.0
 
 # Model architecture
-unet_in_size: 128
-unet_in_ch: 3
+unet_in_size: 32
+unet_in_ch: 4
 unet_ch: 128
 unet_ch_mult: [1, 2, 4]
 unet_attn: [1, 2]
@@ -36,7 +36,7 @@ unet_dropout: 0.1
 
 # Advanced features
 use_ddim: False
-latent_ddpm: False
+latent_ddpm: True
 use_cfg: False
 cfg_guidance_scale: 3.0
 
