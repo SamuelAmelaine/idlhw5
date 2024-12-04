@@ -170,6 +170,14 @@ def parse_args():
         help="Number of steps to accumulate gradients before updating",
     )
 
+    # Add gradient checkpointing argument
+    parser.add_argument(
+        "--use_gradient_checkpointing",
+        type=str2bool,
+        default=False,
+        help="use gradient checkpointing to save memory",
+    )
+
     # first parse of command-line args to check for config file
     args = parser.parse_args()
 
