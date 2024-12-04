@@ -5,7 +5,7 @@ image_size: 64
 batch_size: 64
 num_workers: 4
 num_classes: 100
-num_epochs: 100
+num_epochs: 50
 learning_rate: 4e-4
 weight_decay: 0.0
 grad_clip: 1.0
@@ -16,7 +16,7 @@ gradient_accumulation_steps: 1
 
 # Diffusion model parameters
 num_train_timesteps: 1000
-num_inference_steps: 25
+num_inference_steps: 50
 beta_start: 0.0001
 beta_end: 0.02
 beta_schedule: linear
@@ -49,3 +49,6 @@ min_lr: 1e-6  # Minimum learning rate
 
 # Add gradient checkpointing
 use_gradient_checkpointing: False
+
+# Add validation frequency
+validation_freq: 1  # Validate every epoch instead of every 5 epochs

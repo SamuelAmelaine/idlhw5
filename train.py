@@ -313,37 +313,33 @@ def validate(args, epoch, pipeline, device, wandb_logger):
     pipeline.unet.eval()
     
     with torch.no_grad():
-        # Generate samples
-        if args.use_cfg:
-            # Sample random classes
-            classes = torch.randint(0, args.num_classes, (4,), device=device)
-            samples = pipeline(
-                batch_size=4,
-                num_inference_steps=args.num_inference_steps,
-                classes=classes,
-                guidance_scale=args.cfg_guidance_scale,
-                device=device
-            )
-        else:
-            samples = pipeline(
-                batch_size=4,
-                num_inference_steps=args.num_inference_steps,
-                device=device
-            )
+        # Generate multiple samples with different noise levels
+        timesteps_to_test = [args.num_inference_steps, args.num_inference_steps // 2, args.num_inference_steps // 4]
+        all_samples = []
         
-        # Ensure samples are properly normalized
-        samples = [(img.resize((args.image_size, args.image_size)) if img.size != (args.image_size, args.image_size) else img)
-                  for img in samples]
+        for num_inference_steps in timesteps_to_test:
+            samples = pipeline(
+                batch_size=4,
+                num_inference_steps=num_inference_steps,  # Try different step counts
+                device=device
+            )
+            
+            # Ensure samples are properly normalized
+            samples = [(img.resize((args.image_size, args.image_size)) if img.size != (args.image_size, args.image_size) else img)
+                      for img in samples]
+            all_samples.extend(samples)
         
         # Create image grid with proper normalization
-        grid = Image.new('RGB', (4 * args.image_size, args.image_size))
-        for idx, img in enumerate(samples):
-            grid.paste(img, (idx * args.image_size, 0))
+        grid = Image.new('RGB', (4 * args.image_size, len(timesteps_to_test) * args.image_size))
+        for idx, img in enumerate(all_samples):
+            row = idx // 4
+            col = idx % 4
+            grid.paste(img, (col * args.image_size, row * args.image_size))
         
         # Log to wandb with proper caption
         if is_primary(args) and wandb_logger:
             wandb_logger.log({
-                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}"),
+                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}\nRows: {timesteps_to_test} steps"),
                 "current_timestep": args.num_inference_steps,
             })
         
