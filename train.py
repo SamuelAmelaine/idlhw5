@@ -459,7 +459,10 @@ def main():
     # Initialize VAE if using latent DDPM
     vae = None
     if args.latent_ddpm:
-        vae = VAE().to(device)
+        vae = VAE(
+            ddconfig=args.vae_config,
+            embed_dim=args.unet_in_ch
+        ).to(device)
         vae.init_from_ckpt("pretrained/model.ckpt")
         vae.eval()
     

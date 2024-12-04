@@ -34,6 +34,19 @@ unet_attn: [1, 2]
 unet_num_res_blocks: 2
 unet_dropout: 0.1
 
+# VAE settings (add these)
+vae_config:
+  double_z: True
+  z_channels: 4
+  resolution: 256
+  in_channels: 3
+  out_ch: 3
+  ch: 128
+  ch_mult: [1, 2, 4]
+  num_res_blocks: 2
+  attn_resolutions: []
+  dropout: 0.0
+
 # Advanced features
 use_ddim: False
 latent_ddpm: True
