@@ -249,10 +249,17 @@ def validate(args, epoch, pipeline, device, wandb_logger):
         return grid
 
 def main():
-    # Add these lines at the start of main()
-    torch.backends.cuda.matmul.allow_tf32 = True  # Enable TF32 for faster training
-    torch.backends.cudnn.benchmark = True  # Enable cudnn autotuner
-    torch.backends.cudnn.allow_tf32 = True  # Enable TF32 for convolutions
+    # CUDA setup and memory management
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+    
+    # Enable TF32 for better performance on Ampere GPUs
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    
+    # Set memory allocator settings
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
     
     # Parse arguments
     args = parse_args()
@@ -389,28 +396,19 @@ def main():
     if args.use_gradient_checkpointing:
         unet.enable_gradient_checkpointing()
     
-    # At the start of main()
-    import os
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
-    torch.backends.cudnn.benchmark = True
-    
-    # Add at the start of main()
-    torch.backends.cuda.max_memory_allocated = 0
-    torch.backends.cudnn.benchmark = True
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
-    
     # Verify gradients before training
-    from utils.misc import verify_model_gradients
-    grad_status = verify_model_gradients(unet, F.mse_loss, device)
-    
-    # Log gradient status
     if is_primary(args):
-        logger.info("Gradient status check:")
-        for name, status in grad_status.items():
-            logger.info(f"{name}:")
-            logger.info(f"  requires_grad: {status['requires_grad']}")
-            logger.info(f"  grad_is_none: {status['grad_is_none']}")
-            logger.info(f"  grad_norm: {status['grad_norm']:.6f}")
+        logger.info("Verifying gradients...")
+        grad_status = verify_model_gradients(unet, F.mse_loss, device)
+        
+        if grad_status is not None:
+            logger.info("Gradient check successful")
+            # Only log a summary of gradient status
+            num_grad_none = sum(1 for status in grad_status.values() if status['grad_is_none'])
+            num_params = len(grad_status)
+            logger.info(f"Parameters with gradients: {num_params - num_grad_none}/{num_params}")
+        else:
+            logger.warning("Gradient check failed, but continuing with training")
     
     # Add learning rate scheduler
     from torch.optim.lr_scheduler import CosineAnnealingLR

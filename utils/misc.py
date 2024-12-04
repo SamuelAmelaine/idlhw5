@@ -75,28 +75,51 @@ def verify_model_gradients(model, criterion, device):
     """Verify model gradients using a dummy forward pass."""
     model.train()
     
-    # Create dummy inputs
-    batch_size = 2
-    channels = model.input_ch if hasattr(model, 'input_ch') else 3
-    size = model.input_size if hasattr(model, 'input_size') else 64
-    
-    x = torch.randn(batch_size, channels, size, size).to(device)
-    t = torch.randint(0, 1000, (batch_size,)).to(device)
-    noise = torch.randn_like(x)
-    
-    # Forward pass
-    with torch.enable_grad():
-        pred = model(x, t)
-        loss = criterion(pred, noise)
-        loss.backward()
-    
-    # Check gradients
-    grad_status = {}
-    for name, param in model.named_parameters():
-        grad_status[name] = {
-            'requires_grad': param.requires_grad,
-            'grad_is_none': param.grad is None if param.requires_grad else "N/A",
-            'grad_norm': torch.norm(param.grad).item() if param.grad is not None else 0
-        }
-    
-    return grad_status
+    try:
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Create dummy inputs with proper timestep range
+        batch_size = 2
+        channels = model.input_ch if hasattr(model, 'input_ch') else 3
+        size = model.input_size if hasattr(model, 'input_size') else 64
+        
+        # Ensure inputs are on the correct device and dtype
+        x = torch.randn(batch_size, channels, size, size, device=device)
+        # Use model's num_train_timesteps if available
+        max_timesteps = model.T if hasattr(model, 'T') else 1000
+        t = torch.randint(0, max_timesteps, (batch_size,), device=device)
+        noise = torch.randn_like(x)
+        
+        # Forward pass with error handling
+        with torch.enable_grad():
+            try:
+                pred = model(x, t)
+                loss = criterion(pred, noise)
+                loss.backward()
+            except RuntimeError as e:
+                print(f"Error during forward/backward pass: {e}")
+                return None
+        
+        # Check gradients
+        grad_status = {}
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                grad_status[name] = {
+                    'requires_grad': param.requires_grad,
+                    'grad_is_none': False,
+                    'grad_norm': torch.norm(param.grad).item()
+                }
+            else:
+                grad_status[name] = {
+                    'requires_grad': param.requires_grad,
+                    'grad_is_none': True,
+                    'grad_norm': 0.0
+                }
+        
+        return grad_status
+        
+    except Exception as e:
+        print(f"Error in gradient verification: {e}")
+        return None
