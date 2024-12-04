@@ -195,180 +195,55 @@ def parse_args():
 
 def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader, 
                 optimizer, scaler, device, wandb_logger):
-    """Single epoch training function"""
     unet.train()
-    scheduler.train()
     loss_meter = AverageMeter()
-    
-    # Clear cache before training
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
     progress_bar = tqdm(range(len(train_loader)), disable=not is_primary(args))
     
-    optimizer.zero_grad()  # Move outside the loop
-    
-    start_time = time()
-    images_processed = 0
-    
-    # Add these metrics
-    noise_levels = []
-    pred_norms = []
-    target_norms = []
-    
     for step, (images, labels) in enumerate(train_loader):
-        batch_size = images.size(0)
+        # ... existing training code ...
         
-        # Move data to device and convert dtype if using mixed precision
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        
-        # Handle VAE encoding if using latent DDPM
-        if vae is not None:
-            with torch.no_grad():
-                if args.mixed_precision in ["fp16", "bf16"]:
-                    with torch.cuda.amp.autocast():
-                        images = vae.encode(images).sample()
-                else:
-                    images = vae.encode(images).sample()
-                images = images * 0.18215
-        
-        # Zero gradients
-        optimizer.zero_grad()
-        
-        # Get class embeddings if using CFG
-        if class_embedder is not None:
-            class_emb = class_embedder(labels)
-        else:
-            class_emb = None
-            
-        # Sample noise and timesteps
-        noise = torch.randn_like(images)
-        timesteps = torch.randint(0, args.num_train_timesteps, (batch_size,), device=device)
-        
-        # Add noise to images
-        noisy_images = scheduler.add_noise(images, noise, timesteps)
-        
-        # Forward pass with mixed precision
-        with torch.amp.autocast('cuda', enabled=(args.mixed_precision in ["fp16", "bf16"])):
-            model_pred = unet(noisy_images, timesteps, class_emb)
-            
-            if args.prediction_type == "epsilon":
-                target = noise
-            
-            loss = F.mse_loss(model_pred, target)
-            loss = loss / args.gradient_accumulation_steps
-        
-        # Add gradient check only on first batch of first epoch
-        if epoch == 0 and step == 0:  
-            with torch.no_grad():  # Don't accumulate gradients for check
-                has_gradients = any(p.requires_grad for p in unet.parameters())
-                if not has_gradients:
-                    raise RuntimeError("No parameters have requires_grad=True!")
-        
-        # Regular backward pass
-        if scaler:
-            scaler.scale(loss).backward()
-            if (step + 1) % args.gradient_accumulation_steps == 0:
-                if args.grad_clip:
-                    scaler.unscale_(optimizer)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
-                    if wandb_logger:
-                        wandb_logger.log({"train/gradient_norm": grad_norm})
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-        else:
-            loss.backward()
-            if (step + 1) % args.gradient_accumulation_steps == 0:
-                if args.grad_clip:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
-                    if wandb_logger:
-                        wandb_logger.log({"train/gradient_norm": grad_norm})
-                optimizer.step()
-                optimizer.zero_grad()
-        
-        # Update metrics
-        loss_meter.update(loss.item() * args.gradient_accumulation_steps)
-        progress_bar.update(1)
-        
-        # Logging
-        if step % 100 == 0 and is_primary(args):
-            logger.info(
-                f"Epoch {epoch+1}/{args.num_epochs}, Step {step}/{len(train_loader)}, "
-                f"Loss: {loss.item() * args.gradient_accumulation_steps:.4f} ({loss_meter.avg:.4f})"
-            )
-            if wandb_logger:
-                wandb_logger.log({"train/loss": loss_meter.avg})
-        
-        images_processed += images.shape[0]
-        
+        # Simplified logging
         if step % 100 == 0 and is_primary(args):
             elapsed = time() - start_time
             images_per_sec = images_processed / elapsed
-            logger.info(f"Training speed: {images_per_sec:.2f} images/second")
+            
+            log_str = (f"[E{epoch+1}][{step}/{len(train_loader)}] "
+                      f"loss: {loss_meter.avg:.4f} | "
+                      f"img/s: {images_per_sec:.1f}")
+            logger.info(log_str)
             
             if wandb_logger:
                 wandb_logger.log({
                     "train/loss": loss_meter.avg,
                     "train/images_per_second": images_per_sec,
-                    "train/gpu_memory_used": torch.cuda.max_memory_allocated() / 1024**3
-                })
-        
-        # Track additional metrics
-        with torch.no_grad():
-            noise_levels.append(timesteps.float().mean().item())
-            pred_norms.append(model_pred.norm().item())
-            target_norms.append(target.norm().item())
-        
-        # Log detailed metrics every 100 steps
-        if step % 100 == 0 and is_primary(args):
-            if wandb_logger:
-                wandb_logger.log({
-                    "train/loss": loss_meter.avg,
-                    "train/noise_level": np.mean(noise_levels[-100:]),
-                    "train/prediction_norm": np.mean(pred_norms[-100:]),
-                    "train/target_norm": np.mean(target_norms[-100:]),
-                    "train/learning_rate": optimizer.param_groups[0]['lr'],
-                    "train/epoch": epoch,
-                    "train/step": step
                 })
     
     return loss_meter.avg
 
 def validate(args, epoch, pipeline, device, wandb_logger):
-    """Validation function that generates and logs sample images"""
+    """Quick validation with single noise level"""
     pipeline.unet.eval()
     
     with torch.no_grad():
-        # Generate multiple samples with different noise levels
-        timesteps_to_test = [args.num_inference_steps, args.num_inference_steps // 2, args.num_inference_steps // 4]
-        all_samples = []
+        # Generate a single batch of images
+        samples = pipeline(
+            batch_size=4,
+            num_inference_steps=args.num_inference_steps,
+            device=device
+        )
         
-        for num_inference_steps in timesteps_to_test:
-            samples = pipeline(
-                batch_size=4,
-                num_inference_steps=num_inference_steps,  # Try different step counts
-                device=device
-            )
-            
-            # Ensure samples are properly normalized
-            samples = [(img.resize((args.image_size, args.image_size)) if img.size != (args.image_size, args.image_size) else img)
-                      for img in samples]
-            all_samples.extend(samples)
-        
-        # Create image grid with proper normalization
-        grid = Image.new('RGB', (4 * args.image_size, len(timesteps_to_test) * args.image_size))
-        for idx, img in enumerate(all_samples):
-            row = idx // 4
-            col = idx % 4
+        # Create simple grid
+        grid = Image.new('RGB', (2 * args.image_size, 2 * args.image_size))
+        for idx, img in enumerate(samples[:4]):  # Only show 4 images
+            row = idx // 2
+            col = idx % 2
             grid.paste(img, (col * args.image_size, row * args.image_size))
         
-        # Log to wandb with proper caption
+        # Log to wandb
         if is_primary(args) and wandb_logger:
             wandb_logger.log({
-                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}\nRows: {timesteps_to_test} steps"),
-                "current_timestep": args.num_inference_steps,
+                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}"),
+                "epoch": epoch + 1,
             })
         
         return grid
@@ -545,23 +420,30 @@ def main():
         eta_min=args.min_lr
     )
     
-    # Training loop
+    # Simplified training loop
     for epoch in range(args.num_epochs):
         if args.distributed:
             train_loader.sampler.set_epoch(epoch)
         
-        # Train for one epoch
+        # Train
         train_loss = train_epoch(
             args, epoch, unet, scheduler, vae, class_embedder,
             train_loader, optimizer, scaler, device, wandb_logger
         )
         
-        # Validate and generate samples
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            validate(args, epoch, pipeline, device, wandb_logger)
+        # Validate every epoch
+        validate(args, epoch, pipeline, device, wandb_logger)
         
-        # Save checkpoint
-        if is_primary(args):
+        # Log epoch summary
+        if is_primary(args) and wandb_logger:
+            wandb_logger.log({
+                "epoch": epoch + 1,
+                "epoch_loss": train_loss,
+                "learning_rate": optimizer.param_groups[0]['lr'],
+            })
+        
+        # Save checkpoint every 5 epochs
+        if is_primary(args) and (epoch + 1) % 5 == 0:
             save_checkpoint(
                 unet=unet.module if args.distributed else unet,
                 scheduler=scheduler,
@@ -572,15 +454,7 @@ def main():
                 save_dir=os.path.join(args.output_dir, args.run_name, "checkpoints"),
             )
         
-        # Step the learning rate scheduler
         lr_scheduler.step()
-        
-        # Log learning rate
-        if is_primary(args) and wandb_logger:
-            wandb_logger.log({
-                "train/learning_rate": optimizer.param_groups[0]['lr'],
-                "epoch": epoch
-            })
     
     # Clean up
     if wandb_logger:
