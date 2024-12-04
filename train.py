@@ -237,7 +237,7 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
         noisy_images = scheduler.add_noise(images, noise, timesteps)
         
         # Forward pass with mixed precision
-        with autocast(enabled=(args.mixed_precision in ["fp16", "bf16"])):
+        with torch.amp.autocast('cuda', enabled=(args.mixed_precision in ["fp16", "bf16"])):
             model_pred = unet(noisy_images, timesteps, class_emb)
             
             if args.prediction_type == "epsilon":
@@ -440,6 +440,11 @@ def main():
     import os
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
     torch.backends.cudnn.benchmark = True
+    
+    # Add at the start of main()
+    torch.backends.cuda.max_memory_allocated = 0
+    torch.backends.cudnn.benchmark = True
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
     
     # Training loop
     for epoch in range(args.num_epochs):

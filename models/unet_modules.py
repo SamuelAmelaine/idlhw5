@@ -96,33 +96,30 @@ class AttnBlock(nn.Module):
         v = self.proj_v(h)
 
         # Memory-efficient attention
-        q = q.permute(0, 2, 3, 1).reshape(B, H * W, C)
-        k = k.reshape(B, C, H * W)
+        q = q.reshape(B, C, -1)  # B, C, HW
+        k = k.reshape(B, C, -1)  # B, C, HW
+        v = v.reshape(B, C, -1)  # B, C, HW
+
+        # Split attention computation into chunks
+        attn_chunk_size = H * W // 4  # Process 1/4 of spatial dimensions at a time
+        out = torch.zeros_like(q)
         
-        # Compute attention scores in chunks
-        chunk_size = 1024  # Adjust based on available memory
-        num_chunks = (H * W + chunk_size - 1) // chunk_size
+        for i in range(0, H * W, attn_chunk_size):
+            block = slice(i, min(i + attn_chunk_size, H * W))
+            
+            # Compute attention scores for current chunk
+            scores = torch.bmm(q.transpose(1, 2)[:, block], k) * (C ** -0.5)
+            attn = F.softmax(scores, dim=-1)
+            
+            # Apply attention to values
+            out[:, :, block] = torch.bmm(v, attn.transpose(1, 2))
+            
+            # Free memory
+            del scores, attn
         
-        w = torch.zeros(B, H * W, H * W, device=x.device)
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, H * W)
-            w[:, start:end] = torch.bmm(
-                q[:, start:end], 
-                k
-            ) * (int(C) ** (-0.5))
-        
-        w = F.softmax(w, dim=-1)
-        del q, k  # Free memory
-        
-        v = v.permute(0, 2, 3, 1).reshape(B, H * W, C)
-        h = torch.bmm(w, v)
-        del w, v  # Free memory
-        
-        h = h.reshape(B, H, W, C).permute(0, 3, 1, 2)
-        h = self.proj(h)
-        
-        return x + h
+        out = out.reshape(B, C, H, W)
+        out = self.proj(out)
+        return x + out
 
 
 class CrossAttnBlock(nn.Module):
