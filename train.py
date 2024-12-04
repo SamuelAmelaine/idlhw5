@@ -250,20 +250,17 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
             loss = F.mse_loss(model_pred, target)
             loss = loss / args.gradient_accumulation_steps
         
-        # Add gradient check
-        if step == 0:  # Check only first step of each epoch
-            # Check if gradients are being computed
-            loss.backward()
-            has_gradients = all(p.grad is not None for p in unet.parameters() if p.requires_grad)
-            if not has_gradients:
-                raise RuntimeError("No gradients were computed! Check requires_grad settings.")
-            optimizer.zero_grad()  # Reset gradients after check
+        # Add gradient check only on first batch of first epoch
+        if epoch == 0 and step == 0:  
+            with torch.no_grad():  # Don't accumulate gradients for check
+                has_gradients = any(p.requires_grad for p in unet.parameters())
+                if not has_gradients:
+                    raise RuntimeError("No parameters have requires_grad=True!")
         
         # Regular backward pass
         if scaler:
             scaler.scale(loss).backward()
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                # Add gradient norm logging
                 if args.grad_clip:
                     scaler.unscale_(optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
