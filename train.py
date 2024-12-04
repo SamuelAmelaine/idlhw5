@@ -199,6 +199,7 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     unet.train()
     loss_meter = AverageMeter()
     progress_bar = tqdm(range(len(train_loader)), disable=not is_primary(args))
+    progress_bar.set_description(f"Epoch {epoch+1}/{args.num_epochs}")
     
     # Initialize timing and processing counters
     start_time = time()
@@ -265,56 +266,85 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
                 optimizer.step()
                 optimizer.zero_grad()
         
-        # Update metrics
+        # Update metrics and logging
         loss_meter.update(loss.item() * args.gradient_accumulation_steps)
         images_processed += batch_size
         progress_bar.update(1)
         
-        # Simplified logging
-        if step % 100 == 0 and is_primary(args):
+        # More frequent and detailed logging
+        if step % 50 == 0 and is_primary(args):  # Log every 50 steps
             elapsed = time() - start_time
             images_per_sec = images_processed / elapsed
             
-            log_str = (f"[E{epoch+1}][{step}/{len(train_loader)}] "
-                      f"loss: {loss_meter.avg:.4f} | "
-                      f"img/s: {images_per_sec:.1f}")
+            log_str = (f"[Epoch {epoch+1}/{args.num_epochs}][Step {step}/{len(train_loader)}] "
+                      f"Loss: {loss_meter.avg:.4f} | "
+                      f"Images/sec: {images_per_sec:.1f}")
             logger.info(log_str)
             
             if wandb_logger:
                 wandb_logger.log({
                     "train/loss": loss_meter.avg,
                     "train/images_per_second": images_per_sec,
+                    "train/learning_rate": optimizer.param_groups[0]['lr'],
+                    "train/epoch": epoch + 1,
+                    "train/step": step,
                 })
+    
+    # End of epoch logging
+    if is_primary(args) and wandb_logger:
+        wandb_logger.log({
+            "epoch": epoch + 1,
+            "epoch_loss": loss_meter.avg,
+            "epoch_images_per_second": images_processed / (time() - start_time),
+        })
     
     return loss_meter.avg
 
 def validate(args, epoch, pipeline, device, wandb_logger):
-    """Quick validation with single noise level"""
+    """Validation with better image grid visualization"""
     pipeline.unet.eval()
     
     with torch.no_grad():
-        # Generate a single batch of images
+        # Generate a larger batch of images for better visualization
+        n_samples = 16  # 4x4 grid
         samples = pipeline(
-            batch_size=4,
+            batch_size=n_samples,
             num_inference_steps=args.num_inference_steps,
             device=device
         )
         
-        # Create simple grid
-        grid = Image.new('RGB', (2 * args.image_size, 2 * args.image_size))
-        for idx, img in enumerate(samples[:4]):  # Only show 4 images
-            row = idx // 2
-            col = idx % 2
-            grid.paste(img, (col * args.image_size, row * args.image_size))
+        # Create a grid of images
+        from torchvision.utils import make_grid
+        from PIL import Image
+        import numpy as np
         
-        # Log to wandb
+        # Convert PIL images to tensors
+        sample_tensors = []
+        for img in samples:
+            # Convert PIL image to tensor
+            img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
+            img_tensor = img_tensor.permute(2, 0, 1)
+            sample_tensors.append(img_tensor)
+        
+        # Create grid
+        grid_tensor = make_grid(torch.stack(sample_tensors), nrow=4)
+        
+        # Convert to PIL for wandb
+        grid_image = Image.fromarray(
+            (grid_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        )
+        
+        # Log to wandb with more descriptive caption
         if is_primary(args) and wandb_logger:
             wandb_logger.log({
-                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}"),
-                "epoch": epoch + 1,
+                "generated_samples": wandb.Image(
+                    grid_image, 
+                    caption=f"Epoch {epoch+1} | Step {args.num_inference_steps} steps"
+                ),
+                "current_epoch": epoch + 1,
             })
         
-        return grid
+        return grid_image
 
 def main():
     # CUDA setup and memory management
@@ -497,16 +527,17 @@ def main():
             train_loader, optimizer, scaler, device, wandb_logger
         )
         
-        # Validate every epoch
-        validate(args, epoch, pipeline, device, wandb_logger)
-        
-        # Log epoch summary
-        if is_primary(args) and wandb_logger:
-            wandb_logger.log({
-                "epoch": epoch + 1,
-                "epoch_loss": train_loss,
-                "learning_rate": optimizer.param_groups[0]['lr'],
-            })
+        # Validate more frequently (every epoch)
+        if is_primary(args):
+            validate(args, epoch, pipeline, device, wandb_logger)
+            
+            # Log epoch summary
+            if wandb_logger:
+                wandb_logger.log({
+                    "epoch": epoch + 1,
+                    "epoch_loss": train_loss,
+                    "learning_rate": optimizer.param_groups[0]['lr'],
+                })
         
         # Save checkpoint every 5 epochs
         if is_primary(args) and (epoch + 1) % 5 == 0:
