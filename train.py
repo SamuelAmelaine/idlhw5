@@ -244,7 +244,11 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
             
             if args.prediction_type == "epsilon":
                 target = noise
-                loss = F.mse_loss(model_pred, target) * 1000
+                loss = F.mse_loss(model_pred.float(), target.float(), reduction='mean')
+                
+                # Add noise-weighted loss
+                noise_weight = (1 + timesteps.float() / args.num_train_timesteps) * 10
+                loss = loss * noise_weight.mean()
             
             loss = loss / args.gradient_accumulation_steps
         
@@ -257,6 +261,7 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
                     grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
                 scaler.step(optimizer)
                 scaler.update()
+                lr_scheduler.step()
                 optimizer.zero_grad()
         else:
             loss.backward()
@@ -264,6 +269,7 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
                 if args.grad_clip:
                     grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), args.grad_clip)
                 optimizer.step()
+                lr_scheduler.step()
                 optimizer.zero_grad()
         
         # Update metrics and logging
@@ -301,19 +307,21 @@ def train_epoch(args, epoch, unet, scheduler, vae, class_embedder, train_loader,
     return loss_meter.avg
 
 def validate(args, epoch, pipeline, device, wandb_logger):
-    """Validation with progressive inference steps"""
+    """Validation with better sampling strategy"""
     pipeline.unet.eval()
     
-    # Use fewer steps early in training
-    current_inference_steps = min(
-        20 + (epoch * 5),  # Gradually increase steps
-        args.num_inference_steps
-    )
+    # Use consistent noise for better comparison across epochs
+    if not hasattr(validate, 'fixed_noise'):
+        validate.fixed_noise = torch.randn(
+            16, args.unet_in_ch, args.unet_in_size, args.unet_in_size, 
+            device=device
+        )
     
     with torch.no_grad():
         samples = pipeline(
             batch_size=16,
-            num_inference_steps=current_inference_steps,
+            num_inference_steps=min(50, 20 + epoch * 2),
+            noise=validate.fixed_noise,
             device=device
         )
         
@@ -343,7 +351,7 @@ def validate(args, epoch, pipeline, device, wandb_logger):
             wandb_logger.log({
                 "generated_samples": wandb.Image(
                     grid_image, 
-                    caption=f"Epoch {epoch+1} | Step {current_inference_steps} steps"
+                    caption=f"Epoch {epoch+1} | Step {min(50, 20 + epoch * 2)} steps"
                 ),
                 "current_epoch": epoch + 1,
             })
@@ -513,11 +521,15 @@ def main():
             logger.warning("Gradient check failed, but continuing with training")
     
     # Add learning rate scheduler
-    from torch.optim.lr_scheduler import CosineAnnealingLR
-    lr_scheduler = CosineAnnealingLR(
+    from torch.optim.lr_scheduler import OneCycleLR
+    lr_scheduler = OneCycleLR(
         optimizer,
-        T_max=args.num_epochs,
-        eta_min=args.min_lr
+        max_lr=args.learning_rate,
+        epochs=args.num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.1,  # 10% warmup
+        div_factor=10,   # Initial lr = max_lr/10
+        final_div_factor=10  # Final lr = initial_lr/10
     )
     
     # Simplified training loop

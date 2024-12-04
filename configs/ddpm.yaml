@@ -2,12 +2,12 @@ run_name: ddpm
 seed: 42
 data_dir: ./data/imagenet100_128x128/train
 image_size: 64
-batch_size: 128
+batch_size: 64
 num_workers: 4
 num_classes: 100
 num_epochs: 50
-learning_rate: 2e-4
-weight_decay: 0.0
+learning_rate: 1e-4
+weight_decay: 1e-5
 grad_clip: 1.0
 
 # Mixed precision training
@@ -28,11 +28,11 @@ clip_sample_range: 1.0
 # Model architecture
 unet_in_size: 16
 unet_in_ch: 4
-unet_ch: 128
-unet_ch_mult: [1, 2, 4]
-unet_attn: [1]
-unet_num_res_blocks: 2
-unet_dropout: 0.1
+unet_ch: 256
+unet_ch_mult: [1, 2, 4, 8]
+unet_attn: [1, 2]
+unet_num_res_blocks: 3
+unet_dropout: 0.2
 
 # VAE settings - match the pretrained model architecture
 vae_config:
