@@ -42,3 +42,7 @@ cfg_guidance_scale: 3.0
 
 # Output settings
 output_dir: experiments
+
+# Add these under training settings
+warmup_epochs: 2
+min_lr: 2e-6  # Minimum learning rate

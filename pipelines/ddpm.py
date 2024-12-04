@@ -121,6 +121,9 @@ class DDPMPipeline:
         image = (image + 1.0) / 2.0
         image = image.clamp(0.0, 1.0)
 
+        # Add proper denormalization for visualization
+        image = (image * 255).round().clamp(0, 255)
+
         # Convert to PIL images
         image = image.cpu().permute(0, 2, 3, 1).numpy()
         image = self.numpy_to_pil(image)

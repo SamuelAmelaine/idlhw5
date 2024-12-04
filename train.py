@@ -286,15 +286,20 @@ def validate(args, epoch, pipeline, device, wandb_logger):
                 device=device
             )
         
-        # Create image grid
+        # Ensure samples are properly normalized
+        samples = [(img.resize((args.image_size, args.image_size)) if img.size != (args.image_size, args.image_size) else img)
+                  for img in samples]
+        
+        # Create image grid with proper normalization
         grid = Image.new('RGB', (4 * args.image_size, args.image_size))
         for idx, img in enumerate(samples):
             grid.paste(img, (idx * args.image_size, 0))
         
-        # Log to wandb
+        # Log to wandb with proper caption
         if is_primary(args) and wandb_logger:
             wandb_logger.log({
-                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}")
+                "samples": wandb.Image(grid, caption=f"Epoch {epoch+1}"),
+                "current_timestep": args.num_inference_steps,
             })
         
         return grid
